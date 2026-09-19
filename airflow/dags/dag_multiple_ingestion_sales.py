@@ -44,6 +44,8 @@ INGEST_TABLES = [
     {"schema": "Production", "table": "Product",            "folder": "product"},
     {"schema": "Production", "table": "ProductSubcategory", "folder": "product_subcategory"},
     {"schema": "Production", "table": "ProductCategory",    "folder": "product_category"},
+    {"schema": "Customer",   "table": "Customer",           "folder": "customer"},
+    {"schema": "Customer", "table": "Person", "folder": "person"},
 ]
 
 
