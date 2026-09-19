@@ -125,6 +125,8 @@ def fetch_open_meteo(location: tuple, dataset: str, run_date: str) -> list:
 
     log.info(f"GET {dataset} {name} -> {url}")
     resp = requests.get(url, timeout=60)
+    if resp.status_code >= 400:
+        log.error(f"{dataset}/{name} HTTP {resp.status_code}: {resp.text[:500]}")
     resp.raise_for_status()
     body = resp.json()
 

@@ -7,3 +7,4 @@ install-b.sql
 install-c.sql
 install-d.sql
 *.sql.gz
+settings.json

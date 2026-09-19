@@ -238,7 +238,12 @@ sama seperti DAG AdventureWorks (Mis. `elt_minio:9000`).
     task_ingest = PythonOperator.partial(
         task_id="ingest_open_meteo",
         python_callable=ingest_one,
-    ).expand(op_kwargs=INGEST_JOBS)
+        max_active_tis_per_dag=2,
+        retries=4,
+        retry_delay=timedelta(minutes=1),
+        retry_exponential_backoff=True,
+        max_retry_delay=timedelta(minutes=15),
+).expand(op_kwargs=INGEST_JOBS)
 
     task_bronze = PythonOperator(task_id="build_bronze", python_callable=build_bronze)
     task_silver = PythonOperator(task_id="build_silver", python_callable=build_silver)
