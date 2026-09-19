@@ -1,0 +1,6 @@
+airflow/logs
+airflow/dags/__pycache__
+
+# large data dumps (exceed GitHub's 100MB file limit)
+install-d.sql
+*.sql.gz

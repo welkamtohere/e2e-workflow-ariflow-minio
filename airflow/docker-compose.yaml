@@ -1,0 +1,115 @@
+x-airflow-common: &airflow-common
+  image: airflow_image
+  environment:
+    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+    - AIRFLOW__CORE__FERNET_KEY=FB0o_zt4e3Ziq3LdUUO7F2Z95cvFFx16hU8jTeR1ASM=
+    - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    - AIRFLOW__CORE__LOGGING_LEVEL=INFO
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - /var/run/docker.sock:/var/run/docker.sock
+  depends_on:
+    - postgres
+  networks:
+    - airflow-net
+    - elt-net
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=airflow
+    volumes:
+      - ./docker-init-scripts/postgres:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - airflow-net
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow_init
+    entrypoint: /bin/bash
+    command: -c 'airflow db init && airflow users create --username airflow --password airflow --firstname Bagas --lastname Marin --role Admin --email admin@example.org'
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: airflow webserver
+    ports:
+      - "8080:8080"
+    container_name: airflow_webserver
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: airflow scheduler
+    container_name: airflow_scheduler
+    restart: always
+
+  # MySQL service used by dags/test_connection.py
+  mysql:
+    image: mysql:8
+    container_name: airflow_mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=airflow
+      - MYSQL_DATABASE=target_db
+      - MYSQL_USER=airflow
+      - MYSQL_PASSWORD=airflow
+    volumes:
+      - ./docker-init-scripts/mysql:/docker-entrypoint-initdb.d:ro
+      - mysqldata:/var/lib/mysql
+    networks:
+        - airflow-net
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: elt_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"    # S3 API endpoint  → dipakai DAG & DuckDB
+      - "9001:9001"    # MinIO Console UI → http://localhost:9001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - elt-net
+
+  # ── MinIO Init: buat bucket otomatis saat pertama kali ────
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: elt_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        sleep 3 &&
+        mc alias set local http://minio:9000 minioadmin minioadmin123 &&
+        mc mb --ignore-existing local/adventureworks-elt &&
+        echo '✅ Bucket adventureworks-elt siap'
+      "
+    restart: "no"
+networks:
+  airflow-net:
+    driver: bridge
+  elt-net:
+    external: true
+    name: elt_pipeline_elt-net
+
+volumes:
+  mysqldata:
+  pgdata:
+  minio-data:
