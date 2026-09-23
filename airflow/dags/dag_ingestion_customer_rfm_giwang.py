@@ -4,7 +4,6 @@ AdventureWorks (PostgreSQL) → MinIO (raw Parquet)
 """
 
 import io
-import os
 import socket
 import logging
 from datetime import datetime, timedelta
@@ -111,21 +110,84 @@ def check_connections(**context):
 
 
 def ingest_table(schema: str, table: str, folder: str, **context):
-    """Ingest satu tabel dari PostgreSQL ke MinIO sebagai Parquet."""
+    """
+    Ingest satu tabel dari PostgreSQL ke MinIO sebagai Parquet.
+    Fungsi ini akan dijalankan paralel oleh Dynamic Task Mapping.
+    """
     logical_date = context["ds"]
-    client       = get_minio()
-    hook         = PostgresHook(postgres_conn_id=AW_CONN_ID)
+    object_path  = f"raw/{folder}/dt={logical_date}/data.parquet"
+
+    hook = PostgresHook(postgres_conn_id=AW_CONN_ID)
+    sql  = f'SELECT * FROM "{schema}"."{table}"'
 
     log.info(f"Extracting {schema}.{table}...")
-    df = hook.get_pandas_df(f'SELECT * FROM "{schema}"."{table}"')
+    df = hook.get_pandas_df(sql)
     log.info(f"  → {len(df):,} rows, {len(df.columns)} columns")
 
     for col in df.select_dtypes(include=["datetimetz"]).columns:
         df[col] = df[col].dt.tz_localize(None)
 
-    object_path = f"raw/{folder}/dt={logical_date}/data.parquet"
-    upload_parquet(client, object_path, df_to_parquet_bytes(df))
+    data   = df_to_parquet_bytes(df)
+    client = get_minio()
+    upload_parquet(client, object_path, data)
+
     log.info(f"✅ {table}: {len(df):,} rows → {object_path}")
+
+    # DIUBAH: Cukup return dictionary, Airflow otomatis menyimpannya di XCom
+    return {
+        "table": table,
+        "path": object_path,
+        "rows": len(df)
+    }
+
+
+def validate_ingestion(**context):
+    """Validasi semua file Parquet di MinIO menggunakan hasil dari task sebelumnya."""
+    client = get_minio()
+    ti     = context["ti"]
+
+    # DIUBAH: xcom_pull dari task yang di-expand akan mengembalikan LIST of Dictionaries
+    ingest_results = ti.xcom_pull(task_ids="ingest_table")
+    
+    if not ingest_results:
+        raise ValueError("❌ Tidak ada data dari task 'ingest_tables' di XCom!")
+
+    results_summary = {}
+    
+    # Looping langsung dari hasil XCom, tidak perlu lagi looping INGEST_TABLES
+    for item in ingest_results:
+        table = item["table"]
+        path  = item["path"]
+        rows  = item["rows"]
+
+        try:
+            resp   = client.get_object(MINIO_BUCKET, path)
+            buf    = io.BytesIO(resp.read())
+            schema_pq = pq.read_schema(buf)
+
+            results_summary[table] = {
+                "status": "✅ OK",
+                "info": f"{rows:,} rows | {len(schema_pq.names)} cols | {path}"
+            }
+            log.info(f"✅ {table}: {results_summary[table]['info']}")
+
+        except Exception as e:
+            results_summary[table] = {"status": "❌ FAILED", "info": str(e)}
+            log.error(f"❌ {table}: {e}")
+
+    # Summary
+    log.info("=" * 60)
+    log.info("INGESTION VALIDATION SUMMARY")
+    log.info("=" * 60)
+    for tbl, info in results_summary.items():
+        log.info(f"  {tbl}: {info['status']}")
+
+    failed = [t for t, i in results_summary.items() if "FAILED" in i["status"]]
+    if failed:
+        raise ValueError(f"Validation failed untuk: {failed}")
+
+    log.info("🎉 Semua tabel berhasil diingest ke MinIO!")
+
 
 
 # ════════════════════════════════════════════════════════════
@@ -154,4 +216,11 @@ with DAG(
         op_kwargs=INGEST_TABLES
     )
 
-    task_check >> task_ingest
+    # REDUCE: task non-mapped yang xcom_pull ke task mapped otomatis
+    # menerima LIST berisi hasil semua map index.
+    task_validate = PythonOperator(
+        task_id="validate_ingestion",
+        python_callable=validate_ingestion,
+    )
+
+    task_check >> task_ingest >> task_validate
