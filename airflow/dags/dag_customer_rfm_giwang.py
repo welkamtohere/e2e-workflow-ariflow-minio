@@ -331,7 +331,6 @@ with DAG(
     catchup=False,
     tags=["postgres", "adventure_works", "etl", "sales"],
 ) as dag:
-
     task_check_connection = PythonOperator(
         task_id="check_connection",
         python_callable=check_connection,
